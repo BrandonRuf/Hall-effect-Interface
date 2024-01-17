@@ -281,12 +281,15 @@ class Thermocouple_api():
                   print(e)
                   self.simulation_mode = True
                   self.serial = None
+                  return
                 
         # Container for scan data as it is dynamically acquired          
         self.scan_data = ''
                 
         # Give the arduino time to run the setup loop
         _time.sleep(2)
+        
+        if (self.getID()[:10] != 'Ugrad Labs') : self.serial = None
     
 
     def getID(self):
@@ -530,10 +533,11 @@ class Hall_interface(_g.BaseObject):
             # Make the new one
             self.keithley_api = keithley_dmm_api(self.settings['Keithley/Device'], self._pyvisa_py)
             self.arduino_api  = Thermocouple_api(self.settings['Arduino/Port'][:4])
+            
+            self.label_dmm_name.set_text('Neither Device Connected')
 
             # Tell the user what dmm is connected
             if self.keithley_api.instrument == None:
-                self.label_dmm_name.set_text('')#'*** Simulation Mode ***')
                 self.label_dmm_name.set_colors('pink' if _s.settings['dark_theme_qt'] else 'red')
                 self.button_connect.set_colors(background='pink')
                 self.settings['Keithley/Status'] = 'Simulation Mode'
@@ -546,6 +550,7 @@ class Hall_interface(_g.BaseObject):
 
             if self.arduino_api.serial == None:
                 self.settings['Arduino/Status'] = 'Simulation Mode'
+                self.button_connect.set_colors(background='pink')
             else:
                 self.label_dmm_name.set_text('Arduino Connected')
                 self.settings['Arduino/Firmware']          = self.arduino_api.getID().split(',')[2]
@@ -555,7 +560,7 @@ class Hall_interface(_g.BaseObject):
                 
                 
             
-            if (self.arduino.serial != None) and (self.keithley_api.instrument != None):
+            if (self.arduino_api.serial != None) and (self.keithley_api.instrument != None):
                 self.label_dmm_name.set_text(self.keithley_api.model + ' and Arduino Connected')
                 
             # Enable the Acquire button
@@ -568,6 +573,7 @@ class Hall_interface(_g.BaseObject):
                 self.keithley_api.close()
             self.keithley_api = None
             self.label_dmm_name.set_text('Disconnected')
+            self.settings['Keithley/ID']     = ' -'
             self.settings['Keithley/Status'] = 'Not Connected'
 
             # Make sure it's not still red.
@@ -623,8 +629,9 @@ class Hall_interface(_g.BaseObject):
                 d['t'+str(n+1)] = []
                 d['v'+str(n+1)] = []
         
-        d['t9'] = []
-        d['T']  = []
+        if self.buttonT.is_checked():
+            d['t9'] = []
+            d['T']  = []
 
         # Reset the clock and record it as header
         self.keithley_api._t0 = _time.time()
@@ -662,6 +669,7 @@ class Hall_interface(_g.BaseObject):
 
                     # Append this to the list
                     data = data + [t,v]
+            
             if self.buttonT.is_checked():        
                 t, T = _time.time()-self.keithley_api._t0, self.arduino_api.getTemperature()       
                         
