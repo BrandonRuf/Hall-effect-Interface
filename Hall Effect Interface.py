@@ -6,7 +6,7 @@ _g = _egg.gui
 import mcphysics as _mp
 
 
-_debug_enabled = False
+_debug_enabled = True
 _debug = _mp._debug
 _p = _mp._p
 
@@ -45,7 +45,7 @@ class keithley_dmm_api():
 
 
 
-    def __init__(self, name='ASRL3::INSTR', pyvisa_py=False):
+    def __init__(self, name='ASRL4::INSTR', pyvisa_py=False):
         if not _mp._visa: _s._warn('You need to install pyvisa to use the Keithley DMMs.')
 
         # Create a resource management object
@@ -68,7 +68,7 @@ class keithley_dmm_api():
                 self.read()
 
                 # Ask for the model identifier
-                s = self.query('U0X')
+                s = self.machine_status()
 
                 # DMM model 199
                 if s[0:3] in ['100', '199']: self.model = 'KEITHLEY199'
@@ -157,7 +157,14 @@ class keithley_dmm_api():
         Tells the Keithley to listen to the front panel buttons and ignore instructions from the computer.
         """
         self.write("++loc")
-
+        
+    def machine_status(self):
+        """
+        Get the machine status string.
+        This can be decoded to get the full state of the Keithley 199.
+        """
+        return self.query("U0X").strip("\r\n")
+        
     def lock(self):
         """
         Tells the Keithley to ignore the front panel buttons and listen to instructions from the computer.
@@ -202,36 +209,6 @@ class keithley_dmm_api():
                 print("ERROR: Bad format "+repr(s))
                 return _time.time() - self._t0, _n.nan
 
-#            # Tell it to trigger
-#            self.write("++trg")
-#
-#            # Apparently we poll and see if it switched from 0 to 16.
-#            # When it switched to 16, the measurement is done.
-#            result = 0 # Indicator that measurement is done
-#            n      = 0 # Timeout integer
-#            while not result == 16 and n < 500:
-#
-#                # Don't overload the buffer.
-#                _time.sleep(0.01)
-#                self.write("++spoll")
-#                result = int(self.read().strip())
-#
-#            # This waiting part made an infinite loop at 16.
-#            for n in range(10):
-#                self.write("++spoll")
-#                if 8 & int(self.read()):
-#                    break
-#        # Not tested by Jack, but probably the visa approach is much better.
-#        if "Keithley 2700" == self._device_name:
-#            self.write("ROUT:CLOS (@10%d)"%channel)
-#            self.write("READ?")
-#            resp = self.read()
-#            words = resp.split(",")
-#            if 3 != len(words):
-#                raise RuntimeError
-#            if "VDC" != words[0][-3:]:
-#                raise RuntimeError
-#            return float(words[0][0:-3])
 
     def close(self):
         """
@@ -397,7 +374,18 @@ class Thermocouple_api():
         str
             Raw data string read from the serial line.
         """
-        return self.serial.read_until(expected = terminator.encode()).decode().strip(terminator)
+        try:
+            s = self.serial.read_until(expected = terminator.encode()).decode()
+        except:
+            print("ERROR: Timeout")
+            return _n.nan
+        
+        try:
+            return s.strip(terminator)
+        except:
+            print("ERROR: Bad format "+repr(s))
+            return _n.nan
+            
             
     def disconnect(self):
         """
@@ -434,35 +422,60 @@ class Hall_interface(_g.BaseObject):
         # Internal parameters
         self._pyvisa_py = pyvisa_py
 
-        # Build the GUI
+        # Pattern the GUI
         self.window    = _g.Window('Hall Interface', autosettings_path=autosettings_path+'_window')
         self.window.event_close = self.event_close
         self.grid_top  = self.window.place_object(_g.GridLayout(False))
         self.window.new_autorow()
         self.grid_bot  = self.window.place_object(_g.GridLayout(False), alignment=0)
+        
+        # Button for connection to the Keithley
+        self.button_keithley_connect   = self.grid_top.place_object(_g.Button('Connect', True, False))
 
-        self.button_connect   = self.grid_top.place_object(_g.Button('Connect', True, False))
-
-        # Button list for channels
+        # Button list for selecting Keithley channels
         self.buttons = []
         for n in range(8):
-            self.buttons.append(self.grid_top.place_object(_g.Button(str(n+1),True, True).set_width(25)))
+            self.buttons.append(self.grid_top.place_object(_g.Button(str(n+1),True, True).set_width(25), column=n+1))
             self.buttons[n].signal_toggled.connect(self.save_gui_settings)
             
+        # Label DMM name/connection status
+        self.label_dmm_name = self.grid_top.place_object(_g.Label('Disconnected'), column=9)
+        
+        self.grid_top.new_autorow()
+        
+        # Arduino connection button 
+        self.button_arduino_connect   = self.grid_top.place_object(_g.Button('Connect', True, False))            
+        
+        # Buttons for selecting Arduino functions
         self.buttonT = self.grid_top.place_object(_g.Button('T',True, True).set_width(25))
         self.buttonT.signal_toggled.connect(self.save_gui_settings)
-
-        self.button_acquire = self.grid_top.place_object(_g.Button('Acquire',True).disable())
-        self.label_dmm_name = self.grid_top.place_object(_g.Label('Disconnected'))
-
+        
+        # Label for Arduino connection status
+        self.label_arduino = self.grid_top.place_object(_g.Label('Disconnected'), column=9)
+        
+        self.grid_top.new_autorow()
+        
+        # Button for enabling acquistion on selected dmm channels/Arduino functions
+        self.button_acquire = self.grid_top.place_object(_g.Button('Acquire',True).disable(), column=10, alignment=1)
+        
+        # Settings window (will display relevant DMM/Arduino information)
         self.settings  = self.grid_bot.place_object(_g.TreeDictionary()).set_width(250)
+        
+        # Create data tabs
         self.tabs_data = self.grid_bot.place_object(_g.TabArea(autosettings_path+'_tabs_data.txt'), alignment=0)
         self.tab_raw   = self.tabs_data.add_tab('Raw Data')
-
+        self.tab_temp  = self.tabs_data.add_tab('Temperature')
+        
+        # Main raw data plotting 
         self.label_path = self.tab_raw.add(_g.Label('Output Path:').set_colors('cyan' if _s.settings['dark_theme_qt'] else 'blue'))
         self.tab_raw.new_autorow()
+        self.plot_raw   = self.tab_raw.place_object(_g.DataboxPlot('*.csv', autosettings_path+'_plot_raw.txt' , autoscript=2), alignment=0)
+        
+        # Extra lone emperature plotting
+        self.label_path = self.tab_temp.add(_g.Label('Output Path:').set_colors('cyan' if _s.settings['dark_theme_qt'] else 'blue'))
+        self.tab_temp.new_autorow()
+        self.plot_temp  = self.tab_temp.place_object(_g.DataboxPlot('*.csv', autosettings_path+'_plot_temp.txt', autoscript=2), alignment=0)
 
-        self.plot_raw  = self.tab_raw.place_object(_g.DataboxPlot('*.csv', autosettings_path+'_plot_raw.txt', autoscript=2), alignment=0)
 
         # Create a resource management object to populate the list
         if _mp._visa:
@@ -478,33 +491,44 @@ class Hall_interface(_g.BaseObject):
                     names.append(str(self.resource_manager.resource_info(x).alias))
                 else:
                     names.append(x)
-                    
+        
+        # Grab availible comports
         comports = _mp._serial.tools.list_ports.comports()
         ports    = []
+        d_index  = 0
                     
-        for port, desc, hwid in sorted(comports):
+        for i, comport in enumerate(sorted(comports)):
+            port,desc,hwid = comport
             ports.append("{}: {}".format(port, desc))
+            
+            # Check for Arduino label in the port name
+            if 'Arduino' in desc: d_index = i
         
 
         # Keithley settings
-        self.settings.add_parameter('Keithley/Device', 0, type='list', values=['Simulation']+names)
+        self.settings.add_parameter('Keithley/Device', default_list_index=3,type='list', values=['Simulation']+names)
         self.settings.add_parameter('Keithley/ID' , value='-', readonly = True)
         self.settings.add_parameter('Keithley/Status' , value = 'Not Connected', readonly = True)
-        self.settings.add_parameter('Keithley/', value = ' ',readonly=True)
+        self.settings.add_parameter('Keithley/Configuration', value = ' ',readonly=True)
+        self.settings.add_parameter('Keithley/Configuration/Multiplex', value = ' ',readonly=True)
+        self.settings.add_parameter('Keithley/Configuration/Function', value = ' ',readonly=True)
+        self.settings.add_parameter('Keithley/Configuration/Range', value = ' ',readonly=True)
+        self.settings.add_parameter('Keithley/Configuration/Rate', value = ' ',readonly=True)
         self.settings.add_parameter('Keithley/Unlock', True, tip='Unlock the device\'s front panel after acquisition.')
+        self.settings.add_parameter('Keithley/ ', value = ' ',readonly=True)
+
         
-        # Thermocouple settings
-        self.settings.add_parameter('Arduino/Port', 0, type='list', values=['Simulation']+ports)
+        # Arduino settings
+        self.settings.add_parameter('Arduino/Port', default_list_index=d_index+1, type='list', values=['Simulation']+ports)
         self.settings.add_parameter('Arduino/Firmware' , value='-', readonly = True)
         self.settings.add_parameter('Arduino/Status' , value = 'Not Connected', readonly = True)
         self.settings.add_parameter('Arduino/', value = ' ',readonly=True)
-        self.settings.add_parameter('Arduino/Thermocouple', value=' -', readonly = True)
-        self.settings.add_parameter('Arduino/Conversion Mode', value=' -', readonly = True)
-        
-        
+        self.settings.add_parameter('Arduino/Thermocouple/Type', value=' -', readonly = True)
+        self.settings.add_parameter('Arduino/Thermocouple/Conversion Mode', value=' -', readonly = True)
 
         # Connect all the signals
-        self.button_connect.signal_clicked.connect(self._button_connect_clicked)
+        self.button_keithley_connect.signal_clicked.connect(self._button_keithley_connect_clicked)
+        self.button_arduino_connect.signal_clicked .connect(self._button_arduino_connect_clicked)
         self.button_acquire.signal_clicked.connect(self._button_acquire_clicked)
 
         # Run the base object stuff and autoload settings
@@ -518,50 +542,33 @@ class Hall_interface(_g.BaseObject):
         # Show the window.
         self.window.show(block)
 
-    def _button_connect_clicked(self, *a):
+    def _button_keithley_connect_clicked(self, *a):
         """
         Connects or disconnects the VISA resource.
         """
 
         # If we're supposed to connect
-        if self.button_connect.get_value():
+        if self.button_keithley_connect.get_value():
             
             # Close it if it exists for some reason
             if not self.keithley_api == None: self.keithley_api.close()
-            if not self.arduino_api  == None: self.arduino_api.disconnect()
             
             # Make the new one
             self.keithley_api = keithley_dmm_api(self.settings['Keithley/Device'], self._pyvisa_py)
-            self.arduino_api  = Thermocouple_api(self.settings['Arduino/Port'][:4])
             
             self.label_dmm_name.set_text('Neither Device Connected')
 
             # Tell the user what dmm is connected
             if self.keithley_api.instrument == None:
                 self.label_dmm_name.set_colors('pink' if _s.settings['dark_theme_qt'] else 'red')
-                self.button_connect.set_colors(background='pink')
+                self.button_keithley_connect.set_colors(background='pink')
                 self.settings['Keithley/Status'] = 'Simulation Mode'
             else:
                 self.label_dmm_name.set_text(self.keithley_api.model + ' Connected')
                 self.label_dmm_name.set_style('')
-                self.button_connect.set_colors(background='')
-                self.settings['Keithley/ID']        = self.keithley_api.model
-                self.settings['Keithley/Status']    = 'Connected'
-
-            if self.arduino_api.serial == None:
-                self.settings['Arduino/Status'] = 'Simulation Mode'
-                self.button_connect.set_colors(background='pink')
-            else:
-                self.label_dmm_name.set_text('Arduino Connected')
-                self.settings['Arduino/Firmware']          = self.arduino_api.getID().split(',')[2]
-                self.settings['Arduino/Thermocouple']      = self.arduino_api.getThermocoupleType()
-                self.settings['Arduino/Conversion Mode']   = self.arduino_api.getMode()
-                self.settings['Arduino/Status']            = 'Connected'
+                self.label_dmm_name.set_colors(text='blue')
                 
-                
-            
-            if (self.arduino_api.serial != None) and (self.keithley_api.instrument != None):
-                self.label_dmm_name.set_text(self.keithley_api.model + ' and Arduino Connected')
+                self.keithley_api.write('F0R0N1X')
                 
             # Enable the Acquire button
             self.button_acquire.enable()
@@ -571,24 +578,50 @@ class Hall_interface(_g.BaseObject):
             # Close down the instrument
             if not self.keithley_api.instrument == None:
                 self.keithley_api.close()
+            
             self.keithley_api = None
-            self.label_dmm_name.set_text('Disconnected')
-            self.settings['Keithley/ID']     = ' -'
-            self.settings['Keithley/Status'] = 'Not Connected'
 
             # Make sure it's not still red.
             self.label_dmm_name.set_style('')
-            self.button_connect.set_colors(background='')
-
+            self.button_keithley_connect.set_colors(background='')
+            
             # Disable the acquire button
             self.button_acquire.disable()
+
+        #    
+        self.update_keithley_settings()
+
+    def _button_arduino_connect_clicked(self):
+        
+        # Check if the connect button is being enabled
+        if self.button_arduino_connect.get_value():
+            
+            # Close it if it exists for some reason
+            if not self.arduino_api  == None: self.arduino_api.disconnect()
+            
+            # Make the new one
+            self.arduino_api  = Thermocouple_api(self.settings['Arduino/Port'][:4])
+
+            if self.arduino_api.serial == None:
+                    self.settings['Arduino/Status'] = 'Simulation Mode'
+                    self.button_keithley_connect.set_colors(background='pink')
+            else:
+                self.label_arduino.set_text('Arduino Connected')
+                self.label_arduino.set_style('')
+                self.label_arduino.set_colors(text='blue')
+        
+        else:
             
             if not self.arduino_api.serial == None:
                 self.arduino_api.disconnect()
-            self.settings['Arduino/Firmware']          = ' -'
-            self.settings['Arduino/Thermocouple']      = ' -'
-            self.settings['Arduino/Conversion Mode']   = ' -'
-            self.settings['Arduino/Status']            = 'Not Connected'
+            
+            self.arduino_api = None
+            
+            self.label_arduino.set_text('Disconnected')
+            self.label_arduino.set_colors(text='')
+            
+            
+        self.update_arduino_settings()
 
     def _button_acquire_clicked(self, *a):
         """
@@ -600,7 +633,7 @@ class Hall_interface(_g.BaseObject):
         if not self.button_acquire.is_checked(): return
 
         # Don't proceed if we have no connection
-        if self.keithley_api == None:
+        if self.keithley_api == None and self.arduino_api==None:
             self.button_acquire(False)
             return
 
@@ -620,10 +653,13 @@ class Hall_interface(_g.BaseObject):
 
         # For easy coding
         d = self.plot_raw
+        e = self.plot_temp
 
         # Set up the databox columns
         _debug('  setting up databox')
         d.clear()
+        e.clear()
+        
         for n in range(len(self.buttons)):
             if self.buttons[n].is_checked():
                 d['t'+str(n+1)] = []
@@ -632,11 +668,20 @@ class Hall_interface(_g.BaseObject):
         if self.buttonT.is_checked():
             d['t9'] = []
             d['T']  = []
+            
+            e['t']  = []
+            e['T']  = []
+
 
         # Reset the clock and record it as header
-        self.keithley_api._t0 = _time.time()
-        self._dump(['Date:', _time.ctime()], 'w')
-        self._dump(['Time:', self.keithley_api._t0])
+        self._t0 =  _time.time()
+        try:
+            self.keithley_api._t0 = self._t0
+            self._dump(['Date:', _time.ctime()], 'w')
+            self._dump(['Time:', self.keithley_api._t0])
+        except:
+            self._dump(['Date:', _time.ctime()], 'w')
+            self._dump(['Time:', self._t0])
 
         # And the column labels!
         self._dump(self.plot_raw.ckeys)
@@ -676,9 +721,13 @@ class Hall_interface(_g.BaseObject):
                 d['t9'] = _n.append(d['t9'],t)
                 d['T']  = _n.append(d['T'] ,T)
                 
+                e['t']  = _n.append(e['t'],t)
+                e['T']  = _n.append(e['T'] ,T)
+                
                 data = data + [t,T]
             
-            self.plot_raw.plot()
+            self.plot_raw .plot()
+            self.plot_temp.plot() 
             self.window.process_events()
 
             # Write the line to the dump file
@@ -702,17 +751,84 @@ class Hall_interface(_g.BaseObject):
         # Make sure everything is a string
         for n in range(len(a)): a[n] = str(a[n])
         self.a = a
+        
         # Write it.
         f = open(self.path, mode)
         f.write(','.join(a)+'\n')
         f.close()
+        
+    def update_keithley_settings(self):
+        
+        if(self.keithley_api == None):
+            
+            self.label_dmm_name.set_text('Disconnected')
+            self.settings['Keithley/ID']     = ' -'
+            self.settings['Keithley/Status'] = 'Not Connected'
+            
+            self.settings['Keithley/Configuration/Multiplex'] = ''
+            self.settings['Keithley/Configuration/Function']  = ''
+            self.settings['Keithley/Configuration/Range']     = ''
+            self.settings['Keithley/Configuration/Rate']      = ''
+            return
+        
+        
+        mstatus = self.keithley_api.machine_status()
 
+        ID = mstatus[:3]      # DMM ID
+        M  = mstatus[3]       # DMM Multiplex
+        F  = int(mstatus[5])  # DMM Function
+        R  = int(mstatus[21]) # DMM Range
+        S  = int(mstatus[22]) # DMM Rate
+        
+        self.settings['Keithley/Status'] = 'Connected'
+        self.settings['Keithley/ID']     = ID
+        
+        if(M): self.settings['Keithley/Configuration/Multiplex'] = 'ENABLED'
+        else:  self.settings['Keithley/Configuration/Multiplex'] = 'DISABLED'
+       
+        if  (F == 0): self.settings['Keithley/Configuration/Function'] = 'DC VOLTS'
+        elif(F == 1): self.settings['Keithley/Configuration/Function'] = 'AC VOLTS'
+        elif(F == 2): self.settings['Keithley/Configuration/Function'] = 'OHMS'
+        elif(F == 3): self.settings['Keithley/Configuration/Function'] = 'DC CURRENT'
+        elif(F == 4): self.settings['Keithley/Configuration/Function'] = 'AC CURRENT'
+        elif(F == 5): self.settings['Keithley/Configuration/Function'] = 'ACV dB'
+        elif(F == 6): self.settings['Keithley/Configuration/Function'] = 'ACA dB'
+        
+        if(F == 0):
+            if  (R == 0): self.settings['Keithley/Configuration/Range'] = 'AUTO'
+            elif(R == 1): self.settings['Keithley/Configuration/Range'] = '300 mV'
+            elif(R == 2): self.settings['Keithley/Configuration/Range'] = '3 V'
+            elif(R == 3): self.settings['Keithley/Configuration/Range'] = '30 V'
+            elif(R == 4): self.settings['Keithley/Configuration/Range'] = '300V'
+            elif(R == 5): self.settings['Keithley/Configuration/Range'] = '300V'
+            elif(R == 6): self.settings['Keithley/Configuration/Range'] = '300V'
+            elif(R == 7): self.settings['Keithley/Configuration/Range'] = '300V'
+        else:
+            self.settings['Keithley/Configuration/Range'] = '-'
+        
+        if (S == 0): self.settings['Keithley/Configuration/Rate'] = '4 1/2 Digits'
+        if (S == 1): self.settings['Keithley/Configuration/Rate'] = '5 1/2 Digits'    
+    
+    def update_arduino_settings(self):
+        
+        if(self.arduino_api == None):
+            self.settings['Arduino/Firmware']                     = ' -'
+            self.settings['Arduino/Thermocouple/Type']            = ' -'
+            self.settings['Arduino/Thermocouple/Conversion Mode'] = ' -'
+            self.settings['Arduino/Status']                       = 'Not Connected'
+            return
+        
+        self.settings['Arduino/Firmware']                     = self.arduino_api.getID().split(',')[2]
+        self.settings['Arduino/Thermocouple/Type']            = self.arduino_api.getThermocoupleType()
+        self.settings['Arduino/Thermocouple/Conversion Mode'] = self.arduino_api.getMode()
+        self.settings['Arduino/Status']                       = 'Connected'
+    
     def _set_acquisition_mode(self, mode=True):
         """
         Enables / disables the appropriate buttons, depending on the mode.
         """
         _debug('_set_acquisition_mode('+repr(mode)+')')
-        self.button_connect.disable(mode)
+        self.button_keithley_connect.disable(mode)
         for b in self.buttons: b.disable(mode)
 
     def event_close(self, *a):
