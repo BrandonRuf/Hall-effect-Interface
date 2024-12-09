@@ -447,7 +447,7 @@ class Hall_interface(_g.BaseObject):
         self.button_arduino_connect   = self.grid_top.place_object(_g.Button('Connect', True, False))            
         
         # Buttons for selecting Arduino functions
-        self.buttonT = self.grid_top.place_object(_g.Button('T',True, True).set_width(25))
+        self.buttonT = self.grid_top.place_object(_g.Button('T',True, False).set_width(25))
         self.buttonT.signal_toggled.connect(self.save_gui_settings)
         
         # Label for Arduino connection status
@@ -515,6 +515,11 @@ class Hall_interface(_g.BaseObject):
         self.settings.add_parameter('Keithley/Configuration/Range', value = ' ',readonly=True)
         self.settings.add_parameter('Keithley/Configuration/Rate', value = ' ',readonly=True)
         self.settings.add_parameter('Keithley/Unlock', True, tip='Unlock the device\'s front panel after acquisition.')
+        self.settings.add_parameter('Keithley/  ', value = ' ',readonly=True)
+        self.settings.add_parameter('Keithley/Channel', value = ' ',readonly=True)
+        for i in range(8):
+            self.settings.add_parameter('Keithley/Channel/%d'%(i+1), value = 0.000,suffix = 'V',siPrefix = True,readonly=True)
+            
         self.settings.add_parameter('Keithley/ ', value = ' ',readonly=True)
 
         
@@ -525,6 +530,7 @@ class Hall_interface(_g.BaseObject):
         self.settings.add_parameter('Arduino/', value = ' ',readonly=True)
         self.settings.add_parameter('Arduino/Thermocouple/Type', value=' -', readonly = True)
         self.settings.add_parameter('Arduino/Thermocouple/Conversion Mode', value=' -', readonly = True)
+        self.settings.add_parameter('Arduino/Thermocouple/Temperature', value=0.0, suffix = '°C', readonly = True)
 
         # Connect all the signals
         self.button_keithley_connect.signal_clicked.connect(self._button_keithley_connect_clicked)
@@ -556,7 +562,7 @@ class Hall_interface(_g.BaseObject):
             # Make the new one
             self.keithley_api = keithley_dmm_api(self.settings['Keithley/Device'], self._pyvisa_py)
             
-            self.label_dmm_name.set_text('Neither Device Connected')
+            self.label_dmm_name.set_text('Simulation Mode')
 
             # Tell the user what dmm is connected
             if self.keithley_api.instrument == None:
@@ -609,6 +615,9 @@ class Hall_interface(_g.BaseObject):
                 self.label_arduino.set_text('Arduino Connected')
                 self.label_arduino.set_style('')
                 self.label_arduino.set_colors(text='blue')
+                
+                # Enable the Acquire button
+                self.button_acquire.enable()
         
         else:
             
@@ -619,7 +628,9 @@ class Hall_interface(_g.BaseObject):
             
             self.label_arduino.set_text('Disconnected')
             self.label_arduino.set_colors(text='')
-            
+
+            # Disable the acquire button
+            self.button_acquire.disable()            
             
         self.update_arduino_settings()
 
@@ -650,6 +661,11 @@ class Hall_interface(_g.BaseObject):
 
         # Disable the connection button
         self._set_acquisition_mode(True)
+        
+        # Clear the channel voltages and Thermocouple temperature values
+        for n in range(8):
+            self.settings['Keithley/Channel/%d'%(n+1)] = 0.0
+        self.settings['Arduino/Thermocouple/Temperature'] = 0.0
 
         # For easy coding
         d = self.plot_raw
@@ -703,6 +719,9 @@ class Hall_interface(_g.BaseObject):
 
                     # Get the time and voltage, updating the window in between commands
                     t, v = self.keithley_api.get_voltage(n+1, self.window.process_events)
+                    
+                    self.settings['Keithley/Channel/%d'%(n+1)] = v
+
 
                     # Append the new data points
                     d['t'+str(n+1)] = _n.append(d['t'+str(n+1)], t)
@@ -716,7 +735,9 @@ class Hall_interface(_g.BaseObject):
                     data = data + [t,v]
             
             if self.buttonT.is_checked():        
-                t, T = _time.time()-self.keithley_api._t0, self.arduino_api.getTemperature()       
+                t, T = _time.time()-self.keithley_api._t0, self.arduino_api.getTemperature()    
+                
+                self.settings['Arduino/Thermocouple/Temperature'] = T
                         
                 d['t9'] = _n.append(d['t9'],t)
                 d['T']  = _n.append(d['T'] ,T)
@@ -828,8 +849,12 @@ class Hall_interface(_g.BaseObject):
         Enables / disables the appropriate buttons, depending on the mode.
         """
         _debug('_set_acquisition_mode('+repr(mode)+')')
+        
         self.button_keithley_connect.disable(mode)
         for b in self.buttons: b.disable(mode)
+        
+        self.button_arduino_connect.disable(mode)
+        self.buttonT.disable(mode)
 
     def event_close(self, *a):
         """
